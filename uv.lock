@@ -9,7 +9,7 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "agent-starter-python"
+name = "agentic-ai-voice-assistant"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [

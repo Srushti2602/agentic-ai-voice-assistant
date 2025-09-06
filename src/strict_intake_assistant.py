@@ -9,10 +9,21 @@ import uuid
 import re
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+import httpx
 
 load_dotenv(".env.local")
 from empathetic_rewriter import EmpatheticRewriter
-rewriter = EmpatheticRewriter()  
+rewriter = EmpatheticRewriter()
+
+# Event emitter configuration
+FLOW_EVENTS_URL = os.getenv("FLOW_EVENTS_URL", "http://localhost:8000/events")
+
+async def emit_event(session_id: str, event: dict):
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as c:
+            await c.post(f"{FLOW_EVENTS_URL}/{session_id}", json=event)
+    except Exception:
+        pass  
 
 # ---------- Debug helper ----------
 DEBUG = os.getenv("INTAKE_DEBUG", "1") not in ("", "0", "false", "False")
@@ -281,6 +292,16 @@ def make_ask_node(step: Step):
                 text = "Thank you for letting me know. Let's continue with the next steps."
 
         messages.append(AIMessage(content=text))
+        
+        # Emit event when entering a node
+        session_id = state.get("session_id", "default")
+        await emit_event(session_id, {
+            "event": "node_entered", 
+            "node_id": step.name,
+            "collected_data": collected_data,
+            "completed_steps": completed_steps
+        })
+        
         return {
             **state,
             "messages": messages,
@@ -288,7 +309,7 @@ def make_ask_node(step: Step):
             "completed_steps": completed_steps,
             "current_step": current_step,
             "human_cursor": state.get("human_cursor", 0),
-            "session_id": state.get("session_id", "default"),
+            "session_id": session_id,
         }
     return node
 
@@ -321,6 +342,15 @@ def make_store_node(step: Step, flow_id: str):
         user_text = (humans[human_cursor].content or "").strip()
         dbg(f"[STORE] step='{step.name}' captured_user_text={user_text!r}")
 
+        # Emit event when user input is heard
+        await emit_event(session_id, {
+            "event": "user_heard", 
+            "node_id": step.name, 
+            "text": user_text,
+            "collected_data": collected_data,
+            "completed_steps": completed_steps
+        })
+
         collected_data[step.input_key] = user_text
 
         if step.name not in completed_steps:
@@ -338,12 +368,22 @@ def make_store_node(step: Step, flow_id: str):
         next_step = step.next_name
         dbg(f"[STORE] step='{step.name}' moving_to='{next_step or 'END'}'")
 
+        # If this is the final step, emit completion event
+        final_current_step = next_step if next_step else ""
+        if not final_current_step:  # Flow is complete
+            await emit_event(session_id, {
+                "event": "node_entered",
+                "node_id": "completed",
+                "collected_data": collected_data,
+                "completed_steps": completed_steps
+            })
+
         return {
             **state,
             "messages": messages,
             "collected_data": collected_data,
             "completed_steps": completed_steps,
-            "current_step": next_step if next_step else "",
+            "current_step": final_current_step,
             "human_cursor": human_cursor + 1,
             "session_id": session_id,
         }

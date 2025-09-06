@@ -19,8 +19,9 @@ from livekit.agents import (
     metrics,
 )
 from livekit.plugins import cartesia, deepgram, noise_cancellation
-from strict_intake_assistant import StrictIntakeAssistant
+from strict_intake_assistant import StrictIntakeAssistant, emit_event
 from livekit.plugins import silero
+import httpx
 
 logger = logging.getLogger("agent")
 
@@ -66,8 +67,14 @@ class StrictIntakeInjuryAgent(Agent):
         
         # Initialize placeholders - actual initialization happens in initialize_conversation
         self.assistant = None
-        # NEW: unique session per process/run
-        self.session_id = f"injury_{uuid.uuid4()}"   # e.g., injury_7a3b...
+        # Use forced session ID if provided, otherwise generate new one
+        forced_session = os.getenv("FORCED_SESSION_ID")
+        if forced_session:
+            self.session_id = forced_session
+            print(f"🔗 Using forced session ID: {self.session_id}")
+        else:
+            self.session_id = f"injury_{uuid.uuid4()}"   # e.g., injury_7a3b...
+            print(f"🆔 Generated new session ID: {self.session_id}")
         self.initialized = False
 
     def new_session(self):
@@ -104,9 +111,16 @@ class StrictIntakeInjuryAgent(Agent):
             
             # Check if this was a farewell that ended the session
             if "Thanks, your intake is saved" in response and "Goodbye!" in response:
-                # Rotate to a fresh session for the next intake
+                # Emit session ended event for old session
+                old = self.session_id
                 self.new_session()
                 print(f"🔄 Session completed. New session ID: {self.session_id}")
+                await emit_event(old, {"event": "session_ended"})
+                await emit_event(self.session_id, {
+                    "event": "session_started",
+                    "session_id": self.session_id,
+                    "flow_name": "injury_intake_strict"
+                })
             
             return response
         except Exception as e:
@@ -143,6 +157,9 @@ session = AgentSession(
 # Lock to serialize TTS and pause/resume mic while the bot is speaking
 speaking_lock = asyncio.Lock()
 
+# Global reference for event emission
+global_injury_assistant = None
+
 async def speak(text: str):
     if not text or not text.strip():
         return
@@ -156,6 +173,8 @@ async def speak(text: str):
             #     session.pause_input_audio()
 
             print(f"[TTS] → {text[:80]}")
+            if global_injury_assistant:
+                await emit_event(global_injury_assistant.session_id, {"event":"prompt_spoken","text": text})
             await session.say(text)
             print("[TTS] ✓ done")
         finally:
@@ -198,13 +217,6 @@ async def worker(injury_assistant: StrictIntakeInjuryAgent):
 
 # Only enqueue FINAL transcripts (ignore partials)
 @session.on("user_input_transcribed")
-def on_transcribed(ev):
-    if not getattr(ev, "is_final", True):
-        print(f"Interim: {ev.transcript}")
-        return
-    text = ev.transcript.strip()
-    if text:
-        message_queue.put_nowait(text)
 def on_user_input_transcribed(ev):
     if not getattr(ev, "is_final", True):
         print(f"… partial: {getattr(ev, 'transcript', '')}")
@@ -212,9 +224,12 @@ def on_user_input_transcribed(ev):
     transcript = (getattr(ev, "transcript", "") or "").strip()
     if transcript:
         print(f"✅ final: {transcript}")
+        # tell UI what the user said
+        if global_injury_assistant:
+            asyncio.create_task(emit_event(global_injury_assistant.session_id, {"event":"user_heard","text": transcript}))
         asyncio.create_task(message_queue.put(transcript))
 
-# Optional: handle false interruptions
+# Optional: handle false interruptions--
 @session.on("agent_false_interruption")
 def _on_agent_false_interruption(ev: AgentFalseInterruptionEvent):
     logger.info("false positive interruption, resuming")
@@ -224,10 +239,13 @@ def _on_agent_false_interruption(ev: AgentFalseInterruptionEvent):
 
 
 async def entrypoint(ctx: JobContext):
+    global global_injury_assistant
+    
     # Use a unique identity for the agent
     agent_identity = "srushti-agent-1"
     
     injury_assistant = StrictIntakeInjuryAgent(model_name="qwen2.5:3b")
+    global_injury_assistant = injury_assistant  # Set global reference for event emission
     from langchain_ollama import ChatOllama
     session_llm = ChatOllama(model="qwen2.5:3b", temperature=0.3, timeout=60)  # (kept; not required by the session)
 
@@ -266,6 +284,23 @@ async def entrypoint(ctx: JobContext):
         # Initialize conversation and speak first prompt BEFORE listening for user
         initial_greeting = await injury_assistant.initialize_conversation()
         print(f"\n🤖 Srushti (Strict Intake + Supabase): {initial_greeting}")
+        
+        # Emit session started event
+        await emit_event(injury_assistant.session_id, {
+            "event": "session_started",
+            "session_id": injury_assistant.session_id,
+            "flow_name": "injury_intake_strict"
+        })
+        
+        # Also emit current node if available
+        if injury_assistant.assistant:
+            state = await injury_assistant.assistant.app.aget_state(
+                {"configurable": {"thread_id": injury_assistant.session_id}}
+            )
+            cur = (state.values or {}).get("current_step")
+            if cur is not None:
+                await emit_event(injury_assistant.session_id, {"event": "node_entered", "node_id": cur})
+        
         await speak_all(initial_greeting)
         print("Strict Intake + Supabase injury assistant with database-driven flow ready!")
         
