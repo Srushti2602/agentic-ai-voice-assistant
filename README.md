@@ -63,6 +63,68 @@ In production, use the `start` command:
 ```console
 uv run python src/agent.py start
 ```
+# Intake Flow Visualizer
+
+A React Flow-based visualization tool for your LangGraph + Supabase injury intake process.
+
+## 🎯 What This Shows
+
+This React application provides a **real-time visual representation** of your existing intake flow:
+
+- **Visual Flow Diagram**: See each step of your LangGraph intake process
+- **Real-time Progress**: Track which step the user is currently on
+- **Data Collection**: View collected answers as they come in
+- **Session Management**: Monitor active intake sessions
+
+## 🏗️ Architecture Overview
+
+```
+┌─────────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
+│   React Flow UI     │    │   Python Backend     │    │     Supabase        │
+│                     │    │                      │    │                     │
+│ • Visual flow       │◄──►│ • StrictIntakeAsst   │◄──►│ • flows table       │
+│ • Real-time updates │    │ • LangGraph          │    │ • intake_steps      │
+│ • Session panel     │    │ • LiveKit voice      │    │ • intake_runs       │
+│ • Progress tracking │    │ • WebSocket events   │    │ • intake_answers    │
+└─────────────────────┘    └──────────────────────┘    └─────────────────────┘
+```
+
+## 🔄 How Your Existing Flow Works
+
+Your current system uses:
+
+1. **Database-Driven Steps**: Flow steps are stored in Supabase (`flows` + `intake_steps` tables)
+2. **LangGraph Structure**: Each step creates `ask_{step}` and `store_{step}` nodes
+3. **Voice Interface**: LiveKit handles voice input/output
+4. **State Management**: LangGraph manages conversation state with checkpointing
+
+## 📊 What the Visualization Shows
+
+### Node Types
+- **🟢 START**: Entry point of the flow
+- **🔵 ASK Nodes**: Questions being asked to the user (from your `ask_prompt`)
+- **🟣 STORE Nodes**: Data storage operations (saving to Supabase)
+- **🔴 END**: Flow completion
+
+### Visual States
+- **🟦 Active**: Currently executing step (blue border)
+- **✅ Completed**: Finished steps (green background)  
+- **⭕ Pending**: Not yet reached (gray)
+- **📝 Data**: Shows collected values in each node
+
+## 🚀 Running the Visualization
+
+```bash
+# Start the React app
+cd flow_ui
+npm start
+```
+
+The app runs on `http://localhost:3000` and shows:
+- Interactive flow diagram with zoom/pan
+- Real-time session panel
+- Progress tracking
+- Collected data display
 
 ## Frontend & Telephony
 
@@ -95,6 +157,8 @@ For production deployment:
 1. **Check in your `uv.lock`**: Commit this file to your repository for reproducible builds and proper configuration management.
 
 2. **Set up environment variables**: Ensure all required API keys and configuration values are properly set in your deployment environment.
+
+3. **Commands to run the code**:Run teh console mode command , install sdk so you can hear audio in console mode. Then for react flow do npm run , build , start. 
 
 ## Deploying to production
 
