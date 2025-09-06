@@ -59,14 +59,25 @@ def render(template: str, data: Dict[str, str]) -> str:
     return out
 
 
-def last_ai_text(msgs) -> str:
+def last_ai_block(msgs) -> str:
+    out = []
     for m in reversed(msgs):
+        # If Pydantic AIMessage
         if isinstance(m, AIMessage):
-            return m.content
-        if isinstance(m, dict) and (m.get("role") or m.get("type")) in ("assistant", "ai"):
+            out.append(m.content if isinstance(m.content, str) else "")
+            continue
+        # If dict message
+        elif isinstance(m, dict) and (m.get("role") or m.get("type")) in ("assistant", "ai"):
             c = m.get("content")
-            return c if isinstance(c, str) else ""
-    return ""
+            out.append(c if isinstance(c, str) else "")
+            continue
+        # Stop when you see a human message
+        if isinstance(m, HumanMessage) or (
+            isinstance(m, dict) and (m.get("role") or m.get("type")) == "user"
+        ):
+            break
+    # Use only most recent (if single output required)
+    return out[0] if out else ""
 
 
 # ---------- Steps ----------
@@ -267,29 +278,14 @@ def make_ask_node(step: Step):
         # 2) special greeting hook if this is your first step
         is_first = step.name == state.get("current_step")
         show_greeting = not completed_steps  # first turn only
-        if show_greeting:
-            greet = await rewriter.greeting(agent="Michelle Ross", firm="Pearson Specter Personal Injury")
-            messages.append(AIMessage(content=greet))
-
+        
         # 3) empathetic rewrite of the question
         text = await rewriter.rewrite(base_question)
 
         # 4) Context-aware empathy & advice additions for some key steps
-        if step.name == "medical_treatment":
-            injuries = collected_data.get("injuries", "").lower()
-            medical_treatment = collected_data.get("medical_treatment", "").lower()
-            if injuries in ("none", "no", "no injuries", "not injured") and step.input_key == "medical_treatment":
-                # Skip medical treatment question / move directly with a comforting message
-                text = "I’m glad to hear you weren’t injured. Let’s continue."
-            elif medical_treatment in ("no", "none", ""):
-                # Append gentle advice about calling for help
-                text += " If you feel unwell or have concerns, please call 911 or seek immediate medical help."
-
-        if step.name == "injuries":
-            injuries = collected_data.get("injuries", "").lower()
-            if injuries in ("none", "no", "no injuries", "not injured"):
-                # Soften injury question or move on compassionately
-                text = "Thank you for letting me know. Let's continue with the next steps."
+        if show_greeting:
+            greet = await rewriter.greeting(agent="Michelle Ross", firm="Pearson Specter Personal Injury")
+            text = f"{greet} {text}"
 
         messages.append(AIMessage(content=text))
         
@@ -339,19 +335,68 @@ def make_store_node(step: Step, flow_id: str):
             dbg(f"[STORE] step='{step.name}' interrupt waiting for human input")
             return interrupt(state)
 
+# Replace lines 342-366 in your strict_intake_assistant.py with this:
+
         user_text = (humans[human_cursor].content or "").strip()
         dbg(f"[STORE] step='{step.name}' captured_user_text={user_text!r}")
+
+        # ✨ NEW: Extract and validate the user input using EmpatheticRewriter
+        question = render(step.ask_prompt, collected_data)  # Get the original question
+        is_valid, extracted_value, error_message = await rewriter.extract_and_validate(question, user_text)
+        
+        if not is_valid and error_message:
+            # If extraction failed, ask for clarification
+            dbg(f"[STORE] step='{step.name}' validation failed: {error_message}")
+            messages.append(AIMessage(content=error_message))
+            return {
+                **state,
+                "messages": messages,
+                "collected_data": collected_data,
+                "completed_steps": completed_steps,
+                "current_step": step.name,  # Stay on the same step
+                "human_cursor": human_cursor + 1,  # Move cursor to wait for new input
+                "session_id": session_id,
+            }
+
+        # Use extracted value instead of raw user text
+        final_value = extracted_value if extracted_value else user_text
+        LOW_INJURY_RESPONSES = ["none", "no", "no injuries", "not injured", "nil", "negative", "n/a","no.", "none.", "not applicable"]
+        quick = None
+        lv = (final_value or "").lower()
+
+        if step.name == "injuries":
+            if lv in LOW_INJURY_RESPONSES or lv.startswith("no"):
+                quick = "That's a relief to hear. Let's continue with the next steps."
+            elif any(w in lv for w in ["severe", "serious", "bleeding", "broken", "fracture", "head", "brain", "unconscious"]):
+                quick = "That sounds very serious. Please get medical help."
+
+        elif step.name == "medical_treatment":
+            # If user said no treatment, acknowledge and move on
+            if lv in ("no", "none", ""):
+                # Optional: also check collected injuries if you like
+                quick = "Thanks for letting me know. Let's continue."
+
+        elif step.name == "witnesses":
+            if lv and lv not in ("no", "none"):
+                quick = "Could you share the names of the witnesses if you know them?"
+
+        if quick:
+            messages.append(AIMessage(content=quick))
+
+        dbg(f"[STORE] step='{step.name}' extracted_value={final_value!r} (from raw: {user_text!r})")
 
         # Emit event when user input is heard
         await emit_event(session_id, {
             "event": "user_heard", 
             "node_id": step.name, 
             "text": user_text,
+            "extracted_value": final_value,  # Include extracted value in event
             "collected_data": collected_data,
             "completed_steps": completed_steps
         })
 
-        collected_data[step.input_key] = user_text
+        # Store the EXTRACTED value, not the raw user text
+        collected_data[step.input_key] = final_value  # ← This is the key fix!
 
         if step.name not in completed_steps:
             completed_steps.append(step.name)
@@ -359,7 +404,8 @@ def make_store_node(step: Step, flow_id: str):
         try:
             run_id = await get_or_create_run_id(flow_id, session_id)
             if run_id:
-                await save_answer(run_id, step.name, step.input_key, user_text)
+                # Save the extracted value to database
+                await save_answer(run_id, step.name, step.input_key, final_value)
             else:
                 dbg("[STORE][WARN] No run_id. Skipping save.")
         except Exception as e:
@@ -458,7 +504,7 @@ class StrictIntakeAssistant:
         result = await self.app.ainvoke(initial_state, cfg)
         self._log_state("STATE AFTER START", result)
 
-        return last_ai_text(result.get("messages", [])) or "(no AI)"
+        return last_ai_block(result.get("messages", [])) or "(no AI)"
 
     async def handle_user(self, user_text: str, session_id: str) -> str:
         cfg = {"configurable": {"thread_id": session_id}}
@@ -494,4 +540,4 @@ class StrictIntakeAssistant:
         result = await self.app.ainvoke(new_state, cfg)
         self._log_state("STATE AFTER ainvoke", result)
 
-        return last_ai_text(result.get("messages", [])) or "(no AI)"
+        return last_ai_block(result.get("messages", [])) or "(no AI)"

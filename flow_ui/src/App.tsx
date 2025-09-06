@@ -11,8 +11,7 @@ function App() {
         borderBottom: '1px solid rgba(71, 85, 105, 0.3)',
         backdropFilter: 'blur(10px)'
       }}>
-        <h1 style={{ color: 'rgba(255, 255, 255, 0.95)', margin: '0 0 0.5rem 0' }}>Srushti Jagtap Law Firm - Intake Flow Visualizer</h1>
-        <p style={{ color: 'rgba(156, 163, 175, 0.8)', margin: 0 }}>Real-time visualization of the injury intake process</p>
+        <h1 style={{ color: 'rgba(255, 255, 255, 0.95)', margin: '0 0 0.5rem 0' }}>Injury Record Helpline</h1>
       </header>
       <main style={{ height: 'calc(100vh - 120px)' }}>
         <IntakeFlowVisualizer />

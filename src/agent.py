@@ -47,10 +47,10 @@ for var in optional_vars:
     if value:
         print(f"{var}: {value[:8]}{'*' * (len(value) - 8) if len(value) > 8 else value}")
     else:
-        print(f"⚠️ {var} not set (optional)")
+        print(f" {var} not set (optional)")
 
 if missing_vars:
-    print(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
+    print(f" Missing required environment variables: {', '.join(missing_vars)}")
     print("Please create a .env file with the following variables:")
     for var in missing_vars:
         print(f"  {var}=your_{var.lower()}_here")
@@ -95,7 +95,7 @@ class StrictIntakeInjuryAgent(Agent):
                     return "Thank you for calling Srushti Jagtap. I'm having technical difficulties. Please try again."
                 return response
             except Exception as e:
-                print(f"❌ Initialization error: {e}")
+                print(f" Initialization error: {e}")
                 return "Thank you for calling Srushti Jagtap. I'm having technical difficulties. Please try again."
         return "Hello! How can I help you today?"
     
@@ -114,7 +114,7 @@ class StrictIntakeInjuryAgent(Agent):
                 # Emit session ended event for old session
                 old = self.session_id
                 self.new_session()
-                print(f"🔄 Session completed. New session ID: {self.session_id}")
+                print(f" Session completed. New session ID: {self.session_id}")
                 await emit_event(old, {"event": "session_ended"})
                 await emit_event(self.session_id, {
                     "event": "session_started",
@@ -124,7 +124,7 @@ class StrictIntakeInjuryAgent(Agent):
             
             return response
         except Exception as e:
-            print(f"❌ Message handling error: {e}")
+            print(f" Message handling error: {e}")
             return "I apologize, but I encountered a technical issue. Could you please repeat your response so I can assist you properly?"
     
     def get_initial_greeting(self) -> str:
@@ -133,7 +133,6 @@ class StrictIntakeInjuryAgent(Agent):
 
 
 def prewarm(proc: JobProcess):
-    # No prewarming needed without VAD
     pass
 
 
@@ -146,8 +145,8 @@ session = AgentSession(
     stt=deepgram.STT(
         model="nova-3",
         language="multi",
-        endpointing_ms=1800,     # shorter endpointing
-        interim_results=True,    # we only act on finals below
+        endpointing_ms=1800,     
+        interim_results=True,    
     ),
     tts=cartesia.TTS(voice="6f84f4b8-58a2-430c-8c79-688dad597532"),
     turn_detection="vad",
@@ -211,7 +210,7 @@ async def worker(injury_assistant: StrictIntakeInjuryAgent):
             reply = await injury_assistant.handle_user_message(user_text)
             await speak_all(reply)
         except Exception as e:
-            print(f"❌ worker error: {e}")
+            print(f" worker error: {e}")
         finally:
             message_queue.task_done()
 
@@ -223,7 +222,7 @@ def on_user_input_transcribed(ev):
         return
     transcript = (getattr(ev, "transcript", "") or "").strip()
     if transcript:
-        print(f"✅ final: {transcript}")
+        print(f" final: {transcript}")
         # tell UI what the user said
         if global_injury_assistant:
             asyncio.create_task(emit_event(global_injury_assistant.session_id, {"event":"user_heard","text": transcript}))
@@ -247,8 +246,7 @@ async def entrypoint(ctx: JobContext):
     injury_assistant = StrictIntakeInjuryAgent(model_name="qwen2.5:3b")
     global_injury_assistant = injury_assistant  # Set global reference for event emission
     from langchain_ollama import ChatOllama
-    session_llm = ChatOllama(model="qwen2.5:3b", temperature=0.3, timeout=60)  # (kept; not required by the session)
-
+    session_llm = ChatOllama(model="qwen2.5:3b", temperature=0.3, timeout=60)  
     usage_collector = metrics.UsageCollector()
 
     @session.on("metrics_collected")
