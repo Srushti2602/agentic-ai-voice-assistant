@@ -1,0 +1,12 @@
+langchain>=0.1.0
+langchain-core>=0.1.0
+langgraph>=0.0.19
+langchain-community>=0.0.13
+langchain-ollama>=0.0.3
+livekit>=0.3.0
+PyJWT>=2.8.0
+supabase>=2.3.0
+python-dotenv>=1.0.0
+zstandard>=0.22.0  # For langsmith compression
+langsmith>=0.0.77  # For langgraph tracing
+
