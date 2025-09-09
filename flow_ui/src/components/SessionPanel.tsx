@@ -109,7 +109,7 @@ const SessionPanel: React.FC<SessionPanelProps> = ({ sessionInfo, steps }) => {
             backgroundColor: 'rgba(34, 197, 94, 0.2)',
             borderRadius: '8px',
             border: '1px solid rgba(34, 197, 94, 0.4)',
-            color: 'rgba(34, 197, 94, 0.9)',
+            color: 'white',
             textAlign: 'center',
             backdropFilter: 'blur(10px)'
           }}>

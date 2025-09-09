@@ -98,6 +98,129 @@ class Step:
         self.system_prompt = system_prompt
         self.validate_regex = validate_regex
 
+    async def update(
+        self,
+        ask_prompt: str,
+        input_key: str,
+        next_name: Optional[str],
+        system_prompt: Optional[str] = None,
+        validate_regex: Optional[str] = None,
+    ):
+        dbg(f"[DB] Updated step {self.name}: ask_prompt='{ask_prompt}', input_key='{input_key}'")
+        self.ask_prompt = ask_prompt
+        self.input_key = input_key
+        self.next_name = next_name
+        self.system_prompt = system_prompt
+        self.validate_regex = validate_regex
+        return True
+
+
+async def delete_step(flow_name: str, step_name: str) -> bool:
+    """Delete a step from the database and fix next_name references."""
+    client = await supa()
+    
+    # Get flow_id
+    try:
+        flow_resp = await (
+            client.table("flows")
+            .select("id")
+            .eq("name", flow_name)
+            .single()
+            .execute()
+        )
+        flow_id = flow_resp.data["id"]
+    except Exception as e:
+        dbg(f"[DB] Flow not found: {flow_name}")
+        return False
+    
+    # Get the step to delete
+    try:
+        step_resp = await (
+            client.table("intake_steps")
+            .select("*")
+            .eq("flow_id", flow_id)
+            .eq("name", step_name)
+            .single()
+            .execute()
+        )
+        step_to_delete = step_resp.data
+    except Exception as e:
+        dbg(f"[DB] Step not found: {step_name}")
+        return False
+    
+    # Find steps that point to this step and update their next_name
+    try:
+        # Find steps that have next_name pointing to the step we're deleting
+        pointing_steps_resp = await (
+            client.table("intake_steps")
+            .select("*")
+            .eq("flow_id", flow_id)
+            .eq("next_name", step_name)
+            .execute()
+        )
+        
+        # Update their next_name to point to what the deleted step was pointing to
+        for pointing_step in pointing_steps_resp.data or []:
+            new_next_name = step_to_delete.get("next_name", None)
+            await (
+                client.table("intake_steps")
+                .update({"next_name": new_next_name})
+                .eq("id", pointing_step["id"])
+                .execute()
+            )
+            dbg(f"[DB] Updated step {pointing_step['name']} next_name: {new_next_name}")
+    except Exception as e:
+        dbg(f"[DB] Error updating next_name references: {e}")
+        return False
+    
+    # Delete the step
+    try:
+        await (
+            client.table("intake_steps")
+            .delete()
+            .eq("flow_id", flow_id)
+            .eq("name", step_name)
+            .execute()
+        )
+        dbg(f"[DB] Deleted step: {step_name}")
+        
+        # Reorder remaining steps to fill gaps
+        await reorder_steps_after_delete(flow_id, step_to_delete["order_index"])
+        return True
+    except Exception as e:
+        dbg(f"[DB] Error deleting step {step_name}: {e}")
+        return False
+
+
+async def reorder_steps_after_delete(flow_id: str, deleted_order_index: int):
+    """Reorder steps after deletion to fill gaps in order_index."""
+    client = await supa()
+    
+    try:
+        # Get all steps with order_index greater than the deleted one
+        steps_resp = await (
+            client.table("intake_steps")
+            .select("id, order_index")
+            .eq("flow_id", flow_id)
+            .gt("order_index", deleted_order_index)
+            .order("order_index", desc=False)
+            .execute()
+        )
+        
+        # Decrement their order_index by 1
+        for step in steps_resp.data or []:
+            new_order = step["order_index"] - 1
+            await (
+                client.table("intake_steps")
+                .update({"order_index": new_order})
+                .eq("id", step["id"])
+                .execute()
+            )
+        
+        dbg(f"[DB] Reordered {len(steps_resp.data or [])} steps after deletion")
+    except Exception as e:
+        dbg(f"[DB] Error reordering steps: {e}")
+
 
 # ---------- Supabase async client singleton ----------
 _client: Optional[AsyncClient] = None
@@ -261,6 +384,188 @@ async def load_flow_and_steps(flow_name: str) -> Tuple[Dict[str, Step], str, str
     return steps, flow_id, entry_name
 
 
+# ---------- Flow editing helpers (DB) ----------
+async def fetch_flow_id(flow_name: str) -> str:
+    """Return flow_id for a given flow name or raise ValueError if not found."""
+    client = await supa()
+    try:
+        flow_resp = await (
+            client.table("flows").select("id").eq("name", flow_name).single().execute()
+        )
+    except Exception as e:
+        raise ValueError(f"Flow not found: {flow_name}") from e
+    return flow_resp.data["id"]
+
+
+async def load_flow_steps_raw(flow_name: str) -> List[Dict[str, Any]]:
+    """Return raw intake_steps rows for a flow, ordered by order_index."""
+    client = await supa()
+    flow_id = await fetch_flow_id(flow_name)
+    rows_resp = await (
+        client.table("intake_steps")
+        .select("*")
+        .eq("flow_id", flow_id)
+        .order("order_index", desc=False)
+        .execute()
+    )
+    return rows_resp.data or []
+
+
+def _slugify(text: str) -> str:
+    s = (text or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s)
+    s = s.strip("_")
+    return s or "step"
+
+
+async def _ensure_unique_step_name(client: AsyncClient, flow_id: str, base: str) -> str:
+    """Ensure step name unique for a flow by appending _2, _3, ... if needed."""
+    name = base
+    idx = 2
+    while True:
+        try:
+            res = await (
+                client.table("intake_steps")
+                .select("id")
+                .eq("flow_id", flow_id)
+                .eq("name", name)
+                .limit(1)
+                .execute()
+            )
+            if not (res.data or []):
+                return name
+        except Exception:
+            # If select fails for any reason, return base to avoid infinite loop
+            return name
+        name = f"{base}_{idx}"
+        idx += 1
+
+
+async def insert_step_after_db(
+    flow_name: str,
+    insert_after: str,
+    ask_prompt: str,
+    name: Optional[str] = None,
+    input_key: Optional[str] = None,
+    validate_regex: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Insert a new step after an existing step, shifting order_index and fixing next_name.
+
+    Returns the refreshed ordered steps rows for the flow.
+    """
+    client = await supa()
+    flow_id = await fetch_flow_id(flow_name)
+
+    # Fetch predecessor step
+    try:
+        pred_resp = await (
+            client.table("intake_steps")
+            .select("*")
+            .eq("flow_id", flow_id)
+            .eq("name", insert_after)
+            .single()
+            .execute()
+        )
+    except Exception as e:
+        raise ValueError(f"insert_after step not found: {insert_after}") from e
+
+    pred = pred_resp.data
+    old_next = (pred.get("next_name") or "").strip() or None
+    pred_order = int(pred.get("order_index") or 0)
+
+    # Generate defaults and ensure uniqueness
+    candidate = _slugify(name or ask_prompt or "new_question")
+    unique_name = await _ensure_unique_step_name(client, flow_id, candidate)
+    final_input_key = _slugify(input_key or unique_name)
+
+    # Shift subsequent steps' order_index by +1
+    try:
+        subs_resp = await (
+            client.table("intake_steps")
+            .select("id, order_index")
+            .eq("flow_id", flow_id)
+            .gt("order_index", pred_order)
+            .order("order_index", desc=False)
+            .execute()
+        )
+        for row in subs_resp.data or []:
+            try:
+                await (
+                    client.table("intake_steps")
+                    .update({"order_index": int(row["order_index"]) + 1})
+                    .eq("id", row["id"])  # primary key update by id
+                    .execute()
+                )
+            except Exception as e:
+                dbg(f"[DB][WARN] order_index shift failed for id={row.get('id')}: {e!r}")
+    except Exception as e:
+        dbg(f"[DB][WARN] Could not shift subsequent order_index: {e!r}")
+
+    # Insert new step with next_name=old_next and order_index right after predecessor
+    new_row = {
+        "flow_id": flow_id,
+        "name": unique_name,
+        "order_index": pred_order + 1,
+        "system_prompt": system_prompt,
+        "ask_prompt": ask_prompt,
+        "input_key": final_input_key,
+        "validate_regex": validate_regex,
+        "next_name": old_next,
+    }
+    try:
+        await client.table("intake_steps").insert(new_row).execute()
+    except Exception as e:
+        raise ValueError(f"Failed to insert new step: {e!r}")
+
+    # Update predecessor to point to new step
+    try:
+        await (
+            client.table("intake_steps")
+            .update({"next_name": unique_name})
+            .eq("flow_id", flow_id)
+            .eq("name", insert_after)
+            .execute()
+        )
+    except Exception as e:
+        dbg(f"[DB][WARN] failed to update predecessor.next_name: {e!r}")
+
+    # Return refreshed steps
+    return await load_flow_steps_raw(flow_name)
+
+
+async def update_step_db(
+    flow_name: str,
+    step_name: str,
+    patch: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Update allowed fields on a step and return refreshed ordered steps.
+
+    For simplicity we do not handle reordering here (order_index moves). Use insert-after
+    for adding steps in the correct place.
+    """
+    client = await supa()
+    flow_id = await fetch_flow_id(flow_name)
+
+    allowed = {"ask_prompt", "input_key", "validate_regex", "system_prompt", "next_name"}
+    data = {k: v for k, v in (patch or {}).items() if k in allowed}
+    if not data:
+        return await load_flow_steps_raw(flow_name)
+
+    try:
+        await (
+            client.table("intake_steps")
+            .update(data)
+            .eq("flow_id", flow_id)
+            .eq("name", step_name)
+            .execute()
+        )
+    except Exception as e:
+        raise ValueError(f"Failed to update step '{step_name}': {e!r}")
+
+    return await load_flow_steps_raw(flow_name)
+
+
 # ---------- Nodes ----------
 def make_ask_node(step: Step):
     async def node(state: IntakeState) -> IntakeState:
@@ -335,7 +640,6 @@ def make_store_node(step: Step, flow_id: str):
             dbg(f"[STORE] step='{step.name}' interrupt waiting for human input")
             return interrupt(state)
 
-# Replace lines 342-366 in your strict_intake_assistant.py with this:
 
         user_text = (humans[human_cursor].content or "").strip()
         dbg(f"[STORE] step='{step.name}' captured_user_text={user_text!r}")
@@ -450,7 +754,7 @@ async def build_graph_from_db(flow_name: str):
 
     for s in steps.values():
         g.add_edge(f"ask_{s.name}", f"store_{s.name}")
-        if s.next_name:
+        if s.next_name and s.next_name.strip() and s.next_name in steps:
             g.add_edge(f"store_{s.name}", f"ask_{s.next_name}")
         else:
             g.add_edge(f"store_{s.name}", END)

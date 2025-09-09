@@ -12,6 +12,9 @@ interface UseIntakeAPIReturn {
   error: string | null;
   startSession: (launchVoice?: boolean) => Promise<void>;
   sendMessage: (message: string) => Promise<void>;
+  insertStepAfter: (params: { insert_after: string; ask_prompt: string; name?: string; input_key?: string; validate_regex?: string | null; system_prompt?: string | null; flow_name?: string; }) => Promise<boolean>;
+  updateStep: (params: { name: string; ask_prompt?: string; input_key?: string; validate_regex?: string | null; system_prompt?: string | null; next_name?: string | null; flow_name?: string; }) => Promise<boolean>;
+  deleteStep: (params: { name: string; flow_name?: string; }) => Promise<boolean>;
 }
 
 export const useIntakeAPI = (): UseIntakeAPIReturn => {
@@ -83,6 +86,94 @@ export const useIntakeAPI = (): UseIntakeAPIReturn => {
       setLoading(false); 
     }
   }, [sessionInfo]);
+
+  // Insert a new step after an existing one (pre-session compose)
+  const insertStepAfter = useCallback(async (params: { insert_after: string; ask_prompt: string; name?: string; input_key?: string; validate_regex?: string | null; system_prompt?: string | null; flow_name?: string; }): Promise<boolean> => {
+    const flowName = params.flow_name || 'injury_intake_strict';
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/flows/${encodeURIComponent(flowName)}/steps/insert_after`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          insert_after: params.insert_after,
+          ask_prompt: params.ask_prompt,
+          name: params.name,
+          input_key: params.input_key,
+          validate_regex: params.validate_regex,
+          system_prompt: params.system_prompt,
+        }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setError(data.error || 'Failed to insert step');
+        return false;
+      }
+      // Refresh steps from server to reflect DB order
+      await loadSteps();
+      return true;
+    } catch (e: any) {
+      setError(e.message || 'Failed to insert step');
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }, [loadSteps]);
+
+  // Update an existing step (pre-session)
+  const updateStep = useCallback(async (params: { name: string; ask_prompt?: string; input_key?: string; validate_regex?: string | null; system_prompt?: string | null; next_name?: string | null; flow_name?: string; }): Promise<boolean> => {
+    const flowName = params.flow_name || 'injury_intake_strict';
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/flows/${encodeURIComponent(flowName)}/steps/${encodeURIComponent(params.name)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ask_prompt: params.ask_prompt,
+          input_key: params.input_key,
+          validate_regex: params.validate_regex,
+          system_prompt: params.system_prompt,
+          next_name: params.next_name,
+        }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setError(data.error || 'Failed to update step');
+        return false;
+      }
+      await loadSteps();
+      return true;
+    } catch (e: any) {
+      setError(e.message || 'Failed to update step');
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }, [loadSteps]);
+
+  // Delete a step (pre-session)
+  const deleteStep = useCallback(async (params: { name: string; flow_name?: string; }): Promise<boolean> => {
+    const flowName = params.flow_name || 'injury_intake_strict';
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/flows/${encodeURIComponent(flowName)}/steps/${encodeURIComponent(params.name)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setError(data.error || 'Failed to delete step');
+        return false;
+      }
+      await loadSteps();
+      return true;
+    } catch (e: any) {
+      setError(e.message || 'Failed to delete step');
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }, [loadSteps]);
 
   // WebSocket connection effect
   useEffect(() => {
@@ -178,6 +269,9 @@ export const useIntakeAPI = (): UseIntakeAPIReturn => {
     loading,
     error,
     startSession,
-    sendMessage
+    sendMessage,
+    insertStepAfter,
+    updateStep,
+    deleteStep,
   };
 };

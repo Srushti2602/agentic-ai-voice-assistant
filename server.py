@@ -8,7 +8,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from strict_intake_assistant import StrictIntakeAssistant, load_flow_and_steps
+from src.strict_intake_assistant import (
+    StrictIntakeAssistant,
+    load_flow_steps_raw,
+    insert_step_after_db,
+    update_step_db,
+    delete_step,
+)
 
 app = FastAPI()
 app.add_middleware(
@@ -40,17 +46,107 @@ async def broadcast(session_id: str, event: dict):
 
 @app.get("/api/flows/{name}/steps")
 async def get_steps(name: str):
-    steps, _, _ = await load_flow_and_steps(name)
-    # return ordered array
+    # Return ordered rows including order_index so UI can render correctly
+    rows = await load_flow_steps_raw(name)
     out = []
-    for s in steps.values():
+    for r in rows:
         out.append({
-            "name": s.name,
-            "ask_prompt": s.ask_prompt,
-            "input_key": s.input_key,
-            "next_name": s.next_name,
+            "name": r.get("name"),
+            "ask_prompt": r.get("ask_prompt"),
+            "input_key": r.get("input_key"),
+            "next_name": r.get("next_name"),
+            "system_prompt": r.get("system_prompt"),
+            "validate_regex": r.get("validate_regex"),
+            "order_index": r.get("order_index"),
         })
     return out
+
+
+@app.post("/api/flows/{name}/steps/insert_after")
+async def insert_step_after(name: str, payload: dict = Body(...)):
+    """Insert a new step after an existing step and return refreshed ordered steps."""
+    insert_after = payload.get("insert_after")
+    ask_prompt = payload.get("ask_prompt")
+    step_name = payload.get("name")
+    input_key = payload.get("input_key")
+    validate_regex = payload.get("validate_regex")
+    system_prompt = payload.get("system_prompt")
+
+    if not insert_after or not ask_prompt:
+        return {"ok": False, "error": "insert_after and ask_prompt are required"}
+
+    try:
+        rows = await insert_step_after_db(
+            flow_name=name,
+            insert_after=insert_after,
+            ask_prompt=ask_prompt,
+            name=step_name,
+            input_key=input_key,
+            validate_regex=validate_regex,
+            system_prompt=system_prompt,
+        )
+        # Normalize response similar to GET /steps
+        out = []
+        for r in rows:
+            out.append({
+                "name": r.get("name"),
+                "ask_prompt": r.get("ask_prompt"),
+                "input_key": r.get("input_key"),
+                "next_name": r.get("next_name"),
+                "system_prompt": r.get("system_prompt"),
+                "validate_regex": r.get("validate_regex"),
+                "order_index": r.get("order_index"),
+            })
+        return {"ok": True, "steps": out}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.patch("/api/flows/{name}/steps/{step}")
+async def patch_step(name: str, step: str, payload: dict = Body(...)):
+    """Update fields for a step and return refreshed ordered steps."""
+    try:
+        rows = await update_step_db(name, step, payload or {})
+        out = []
+        for r in rows:
+            out.append({
+                "name": r.get("name"),
+                "ask_prompt": r.get("ask_prompt"),
+                "input_key": r.get("input_key"),
+                "next_name": r.get("next_name"),
+                "system_prompt": r.get("system_prompt"),
+                "validate_regex": r.get("validate_regex"),
+                "order_index": r.get("order_index"),
+            })
+        return {"ok": True, "steps": out}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.delete("/api/flows/{name}/steps/{step}")
+async def delete_step_endpoint(name: str, step: str):
+    """Delete a step and return refreshed ordered steps."""
+    try:
+        success = await delete_step(name, step)
+        if success:
+            # Return updated steps list
+            rows = await load_flow_steps_raw(name)
+            out = []
+            for r in rows:
+                out.append({
+                    "name": r.get("name"),
+                    "ask_prompt": r.get("ask_prompt"),
+                    "input_key": r.get("input_key"),
+                    "next_name": r.get("next_name"),
+                    "system_prompt": r.get("system_prompt"),
+                    "validate_regex": r.get("validate_regex"),
+                    "order_index": r.get("order_index"),
+                })
+            return {"ok": True, "steps": out}
+        else:
+            return {"ok": False, "error": "Failed to delete step"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 @app.post("/api/intake/start")
 async def start(payload: dict = Body(...)):
