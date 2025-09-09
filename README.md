@@ -1,7 +1,8 @@
 # Personal Injury Agent
 
-![alt text](image.png)
-![alt text](image-1.png)
+![Personal Injury Agent UI](assets/image.png)
+![Flow View](assets/image-1.png)
+
 
 This project includes:
 
