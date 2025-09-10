@@ -106,12 +106,14 @@ const SessionPanel: React.FC<SessionPanelProps> = ({ sessionInfo, steps }) => {
         ) : (
           <div style={{
             padding: '12px',
-            backgroundColor: 'rgba(34, 197, 94, 0.2)',
+            backgroundColor: 'rgba(15, 118, 110, 0.20)',
             borderRadius: '8px',
-            border: '1px solid rgba(34, 197, 94, 0.4)',
+            border: '1px solid rgba(13, 148, 136, 0.55)',
             color: 'white',
             textAlign: 'center',
-            backdropFilter: 'blur(10px)'
+            backdropFilter: 'blur(10px)',
+            boxShadow: '0 0 0 1px rgba(13,148,136,0.35), 0 0 12px rgba(13,148,136,0.35)',
+            fontWeight: 600
           }}>
             All steps completed!
           </div>

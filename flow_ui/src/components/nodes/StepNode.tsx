@@ -27,15 +27,14 @@ const StepNode: React.FC<NodeProps<StepNodeData>> = ({ data }) => {
     <div
       style={{
         padding: '12px',
-        borderRadius: '8px',
-        minWidth: '200px',
-        maxWidth: '250px',
+        borderRadius: '12px',
+        minWidth: '220px',
+        maxWidth: '280px',
         fontSize: '12px',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-        display: stepType === 'store' ? 'none' : 'block',
+        boxShadow: '0 6px 24px rgba(0,0,0,0.25)'
       }}
     >
-      <Handle type="target" position={Position.Top} style={{ background: '#555' }} />
+      <Handle type="target" position={Position.Top} style={{ background: 'rgba(255,255,255,0.5)' }} />
       
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
         <div style={{ marginRight: '8px', fontSize: '16px', color: '#9ca3af', display: 'flex', alignItems: 'center' }}>
@@ -53,7 +52,7 @@ const StepNode: React.FC<NodeProps<StepNodeData>> = ({ data }) => {
             </svg>
           )}
         </div>
-        <strong style={{ fontSize: '12px', flex: 1 }}>
+        <strong style={{ fontSize: '12px', flex: 1, color: 'rgba(255,255,255,0.95)' }}>
           {description}
         </strong>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -90,7 +89,7 @@ const StepNode: React.FC<NodeProps<StepNodeData>> = ({ data }) => {
               ×
             </button>
           )}
-          <span style={{ fontSize: '16px' }}>
+          <span style={{ fontSize: '16px', color: 'rgba(255,255,255,0.7)' }}>
             {getStatusIcon()}
           </span>
         </div>
@@ -102,21 +101,21 @@ const StepNode: React.FC<NodeProps<StepNodeData>> = ({ data }) => {
 
       {collectedValue && (
         <div style={{
-          marginTop: '6px',
-          padding: '6px 8px',
-          backgroundColor: 'rgba(34, 197, 94, 0.2)',
-          borderRadius: '6px',
-          fontSize: '10px',
-          color: 'white',
+          marginTop: '8px',
+          padding: '8px 10px',
+          backgroundColor: 'rgba(14, 182, 138, 0.37)',
+          borderRadius: '8px',
+          fontSize: '11px',
+          color: 'rgba(255,255,255,0.95)',
           wordBreak: 'break-word',
-          border: '1px solid rgba(34, 197, 94, 0.3)'
+          border: '1px solid rgba(15, 182, 140, 0.41)'
         }}>
           <span style={{ opacity: 0.9 }}>Response: </span>
-          {collectedValue.length > 40 ? `${collectedValue.substring(0, 40)}...` : collectedValue}
+          {collectedValue.length > 48 ? `${collectedValue.substring(0, 48)}...` : collectedValue}
         </div>
       )}
 
-      <Handle type="source" position={Position.Bottom} style={{ background: '#555' }} />
+      <Handle type="source" position={Position.Bottom} style={{ background: 'rgba(255,255,255,0.5)' }} />
     </div>
   );
 };

@@ -10,6 +10,7 @@ import {
   addEdge,
   Connection,
   ConnectionMode,
+  ConnectionLineType,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { IntakeStep, IntakeState } from '../types/IntakeTypes';
@@ -67,11 +68,13 @@ function NewQuestionModal({
           style={{ width: '100%', padding: 8, borderRadius: 6, backgroundColor: 'rgba(51,65,85,0.6)', color: 'white', border: '1px solid rgba(71,85,105,0.4)' }}
         >
           <option value="">Select position...</option>
-          {steps.map((s) => (
-            <option key={s.name} value={s.name}>
-              {s.order_index}. {s.name}
-            </option>
-          ))}
+          {[...steps]
+            .sort((a, b) => a.order_index - b.order_index)
+            .map((s, idx) => (
+              <option key={s.name} value={s.name}>
+                {idx + 1}. {s.name}
+              </option>
+            ))}
           <option value="__END__">At the end (after all existing steps)</option>
         </select>
         <div style={{ fontSize: 12, color: 'rgba(156,163,175,0.9)', margin: '10px 0 6px' }}>Ask prompt</div>
@@ -126,6 +129,7 @@ const IntakeFlowVisualizer: React.FC = () => {
   // Simple edit form state
   const [editStepName, setEditStepName] = useState<string>('');
   const [editPrompt, setEditPrompt] = useState<string>('');
+  const [editNextName, setEditNextName] = useState<string>('');
 
   // Delete step handler
   const handleDeleteStep = useCallback(async (stepName: string) => {
@@ -159,28 +163,39 @@ const IntakeFlowVisualizer: React.FC = () => {
         description: 'Begin Intake Process'
       },
       style: {
-        backgroundColor: 'rgba(34, 197, 94, 0.9)',
+        backgroundColor: '#0f766e',
         color: 'white',
         fontWeight: 'bold',
-        border: '2px solid rgba(34, 197, 94, 0.6)',
-        backdropFilter: 'blur(10px)',
-        borderRadius: '8px'
+        border: '2px solid rgba(10, 136, 90, 0.59)',
+        backdropFilter: 'blur(6px)',
+        borderRadius: '10px'
       }
     });
 
     yPosition += ySpacing;
 
-    // Create nodes for each step (ask + store pattern from your LangGraph)
-    console.log('DEBUG Processing steps:', steps.map(s => s.name));
-    steps.forEach((step, index) => {
-      console.log(`DEBUG Creating nodes for step ${index}:`, step.name);
+    // Create nodes by following the next_name chain to reflect the true runtime flow
+    console.log('DEBUG Processing steps (chain):', steps.map(s => s.name));
+    const stepMap: Record<string, IntakeStep> = Object.fromEntries(steps.map(s => [s.name, s]));
+    const allNames = new Set(steps.map(s => s.name));
+    const pointed = new Set(steps.map(s => (s.next_name || '').trim()).filter(Boolean));
+    // Prefer the step that no one points to; fallback to the first item
+    let entryName: string = steps[0]?.name || '';
+    for (const n of Array.from(allNames)) { if (!pointed.has(n)) { entryName = n; break; } }
+
+    const visited = new Set<string>();
+    let currentName: string | undefined = entryName;
+    let prevAskIdForChain: string | null = null;
+    let lastVisited: string | null = null;
+
+    while (currentName && allNames.has(currentName) && !visited.has(currentName)) {
+      const step = stepMap[currentName as string] as IntakeStep;
+      visited.add(currentName);
       const isActive = currentState?.current_step === step.name;
       const isCompleted = currentState?.completed_steps.includes(step.name) || false;
-      
-      // Ask node
       const askNodeId = `ask_${step.name}`;
       const askPosition = { x: xPosition, y: yPosition };
-      console.log(`DEBUG Ask node position for ${step.name}:`, askPosition);
+
       flowNodes.push({
         id: askNodeId,
         type: 'stepNode',
@@ -197,46 +212,120 @@ const IntakeFlowVisualizer: React.FC = () => {
           onDelete: editMode ? handleDeleteStep : undefined
         },
         style: {
-          backgroundColor: isActive ? 'rgba(59, 130, 246, 0.9)' : isCompleted ? 'rgba(34, 197, 94, 0.8)' : 'rgba(51, 65, 85, 0.8)',
-          color: 'white',
-          border: isActive ? '2px solid rgba(59, 130, 246, 1)' : isCompleted ? '1px solid rgba(34, 197, 94, 0.6)' : '1px solid rgba(71, 85, 105, 0.4)',
-          backdropFilter: 'blur(10px)',
-          borderRadius: '8px'
+          backgroundColor: '#27323f',
+          color: 'rgba(255,255,255,0.92)',
+          border: isActive
+            ? '2px solid rgba(45,212,191,0.95)'
+            : isCompleted
+              ? '1px solid rgba(13,148,136,0.5)'
+              : '1px solid rgba(255,255,255,0.12)',
+          boxShadow: isActive
+            ? '0 0 0 2px rgba(45,212,191,0.45), 0 0 10px rgba(45,212,191,0.45), 0 0 22px rgba(45,212,191,0.35), 0 0 40px rgba(45,212,191,0.25)'
+            : '0 2px 0 rgba(0,0,0,0.25)',
+          transition: 'box-shadow 150ms ease, border-color 150ms ease',
+          backdropFilter: 'blur(4px)',
+          borderRadius: '12px'
         }
       });
 
-      yPosition += ySpacing; // Space before next step
-
-      // Edge from previous step or start
-      if (index === 0) {
+      // Connect from start or previous ask
+      if (!prevAskIdForChain) {
         flowEdges.push({
           id: `start-${askNodeId}`,
           source: 'start',
           target: askNodeId,
-          type: 'smoothstep',
-          style: { 
-            stroke: 'rgba(34, 197, 94, 0.8)',
-            strokeWidth: 2
-          }
+          type: 'simplebezier',
+          style: { stroke: 'rgba(20,184,166,0.9)', strokeWidth: 2 }
         });
       } else {
-        const prevAskId = `ask_${steps[index - 1].name}`;
-        const prevCompleted = currentState?.completed_steps.includes(steps[index - 1].name) || false;
+        const prevStepName = lastVisited as string; // not null if prevAskIdForChain exists
+        const prevCompleted = currentState?.completed_steps.includes(prevStepName) || false;
         flowEdges.push({
-          id: `${prevAskId}-${askNodeId}`,
-          source: prevAskId,
+          id: `${prevAskIdForChain}-${askNodeId}`,
+          source: prevAskIdForChain,
           target: askNodeId,
-          type: 'smoothstep',
-          style: { 
-            stroke: prevCompleted ? 'rgba(34, 197, 94, 0.8)' : 'rgba(71, 85, 105, 0.6)',
+          type: 'simplebezier',
+          style: {
+            stroke: prevCompleted ? 'rgba(20,184,166,0.7)' : 'rgba(255,255,255,0.18)',
             strokeWidth: prevCompleted ? 2 : 1
           }
         });
       }
-    });
+
+      // Advance
+      prevAskIdForChain = askNodeId;
+      lastVisited = step.name;
+      yPosition += ySpacing;
+      currentName = (step.next_name || '').trim() || undefined;
+    }
+
+    // Append any orphan steps not connected by next_name chain (rare, shown after the main chain)
+    for (const s of steps) {
+      if (visited.has(s.name)) continue;
+      const isActive = currentState?.current_step === s.name;
+      const isCompleted = currentState?.completed_steps.includes(s.name) || false;
+      const askNodeId = `ask_${s.name}`;
+      const askPosition = { x: xPosition, y: yPosition };
+      flowNodes.push({
+        id: askNodeId,
+        type: 'stepNode',
+        position: askPosition,
+        data: {
+          label: `ASK: ${s.name}`,
+          description: s.ask_prompt,
+          stepType: 'ask',
+          isActive,
+          isCompleted,
+          inputKey: s.input_key,
+          collectedValue: currentState?.collected_data[s.input_key] || '',
+          stepName: s.name,
+          onDelete: editMode ? handleDeleteStep : undefined
+        },
+        style: {
+          backgroundColor: '#27323f',
+          color: 'rgba(255,255,255,0.92)',
+          border: isActive
+            ? '2px solid rgba(45,212,191,0.95)'
+            : isCompleted
+              ? '1px solid rgba(13,148,136,0.5)'
+              : '1px solid rgba(255,255,255,0.12)',
+          boxShadow: isActive
+            ? '0 0 0 2px rgba(45,212,191,0.45), 0 0 10px rgba(45,212,191,0.45), 0 0 22px rgba(45,212,191,0.35), 0 0 40px rgba(45,212,191,0.25)'
+            : '0 2px 0 rgba(0,0,0,0.25)',
+          transition: 'box-shadow 150ms ease, border-color 150ms ease',
+          backdropFilter: 'blur(4px)',
+          borderRadius: '12px'
+        }
+      });
+      // Link from previous placed node
+      if (prevAskIdForChain) {
+        const prevCompleted = lastVisited ? (currentState?.completed_steps.includes(lastVisited) || false) : false;
+        flowEdges.push({
+          id: `${prevAskIdForChain}-${askNodeId}`,
+          source: prevAskIdForChain,
+          target: askNodeId,
+          type: 'simplebezier',
+          style: {
+            stroke: prevCompleted ? 'rgba(20,184,166,0.7)' : 'rgba(255,255,255,0.18)',
+            strokeWidth: prevCompleted ? 2 : 1
+          }
+        });
+      } else {
+        flowEdges.push({
+          id: `start-${askNodeId}`,
+          source: 'start',
+          target: askNodeId,
+          type: 'simplebezier',
+          style: { stroke: 'rgba(20,184,166,0.9)', strokeWidth: 2 }
+        });
+      }
+      prevAskIdForChain = askNodeId;
+      lastVisited = s.name;
+      yPosition += ySpacing;
+    }
 
     // Create END node
-    const lastStep = steps[steps.length - 1];
+    const lastStep = lastVisited ? stepMap[lastVisited] : steps[steps.length - 1];
     const endNodeId = 'end';
     const isCompleted = currentState?.current_step === 'completed' || currentState?.session_status === 'completed';
     
@@ -245,16 +334,16 @@ const IntakeFlowVisualizer: React.FC = () => {
       type: 'output',
       position: { x: xPosition, y: yPosition },
       data: { 
-        label: isCompleted ? '🎉 COMPLETED' : 'END',
+        label: isCompleted ? ' COMPLETED' : 'END',
         description: isCompleted ? 'Intake Successfully Completed!' : 'Intake Complete'
       },
       style: { 
-        backgroundColor: isCompleted ? 'rgba(34, 197, 94, 0.9)' : 'rgba(107, 114, 128, 0.8)',
+        backgroundColor: isCompleted ? '#14b8a6' : '#111827',
         color: 'white',
         fontWeight: 'bold',
-        border: isCompleted ? '3px solid rgba(34, 197, 94, 0.6)' : '1px solid rgba(107, 114, 128, 0.4)',
-        backdropFilter: 'blur(10px)',
-        borderRadius: '8px'
+        border: isCompleted ? '3px solid #0d9488' : '1px solid rgba(255,255,255,0.08)',
+        backdropFilter: 'blur(6px)',
+        borderRadius: '12px'
       }
     });
 
@@ -265,10 +354,10 @@ const IntakeFlowVisualizer: React.FC = () => {
         id: `${lastAskId}-${endNodeId}`,
         source: lastAskId,
         target: endNodeId,
-        type: 'smoothstep',
+        type: 'simplebezier',
         animated: isCompleted,
         style: { 
-          stroke: isCompleted ? 'rgba(34, 197, 94, 0.9)' : 'rgba(71, 85, 105, 0.6)',
+          stroke: isCompleted ? 'rgba(20,184,166,0.95)' : 'rgba(255,255,255,0.18)',
           strokeWidth: isCompleted ? 3 : 1
         }
       });
@@ -391,34 +480,51 @@ const IntakeFlowVisualizer: React.FC = () => {
     }
   };
 
-  const handleUpdatePrompt = async () => {
-    if (!editStepName || !editPrompt.trim()) return;
-    await updateStep({ name: editStepName, ask_prompt: editPrompt.trim(), flow_name: 'injury_intake_strict' });
+  const handleUpdateStep = async () => {
+    if (!editStepName) return;
+    await updateStep({ 
+      name: editStepName, 
+      ask_prompt: editPrompt.trim() || undefined, 
+      next_name: editNextName === '__END__' ? null : (editNextName || null),
+      flow_name: 'injury_intake_strict' 
+    });
     setEditPrompt('');
   };
 
+  // When selecting a step to edit, preload its current prompt and next_name
+  useEffect(() => {
+    const s = steps.find(x => x.name === editStepName);
+    if (s) {
+      setEditPrompt(s.ask_prompt || '');
+      setEditNextName((s.next_name || '')); // '' means END for our select
+    } else {
+      setEditPrompt('');
+      setEditNextName('');
+    }
+  }, [editStepName, steps]);
+
 
   return (
-    <div style={{ display: 'flex', height: '100%', backgroundColor: '#1e293b' }}>
+    <div style={{ display: 'flex', height: '100%', backgroundColor: '#000000' }}>
       <div style={{ flex: 1 }}>
         {/* Controls */}
         <div style={{ 
           padding: '12px 16px', 
-          backgroundColor: 'rgba(30, 41, 59, 0.95)', 
-          borderBottom: '1px solid rgba(71, 85, 105, 0.3)',
-          backdropFilter: 'blur(10px)'
+          backgroundColor: '#0b0f13',
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+          backdropFilter: 'blur(6px)'
         }}>
               <button 
                 onClick={() => startSession(false)}
                 style={{
                   padding: '10px 20px',
-                  backgroundColor: 'rgba(59, 130, 246, 0.8)',
+                  backgroundColor: '#262626',
                   color: 'white',
-                  border: '1px solid rgba(59, 130, 246, 0.4)',
+                  border: '1px solid rgba(255,255,255,0.08)',
                   borderRadius: '8px',
                   cursor: 'pointer',
                   marginRight: '12px',
-                  backdropFilter: 'blur(10px)',
+                  backdropFilter: 'blur(6px)',
                   transition: 'all 0.2s ease'
                 }}
               >
@@ -428,13 +534,13 @@ const IntakeFlowVisualizer: React.FC = () => {
                 onClick={() => setEditMode(!editMode)}
                 style={{
                   padding: '10px 20px',
-                  backgroundColor: editMode ? 'rgba(239, 68, 68, 0.8)' : 'rgba(71, 85, 105, 0.8)',
+                  backgroundColor: editMode ? 'rgba(239, 68, 68, 0.8)' : '#262626',
                   color: 'white',
-                  border: editMode ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid rgba(71, 85, 105, 0.4)',
+                  border: editMode ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid rgba(255,255,255,0.08)',
                   borderRadius: '8px',
                   cursor: 'pointer',
                   marginRight: '12px',
-                  backdropFilter: 'blur(10px)',
+                  backdropFilter: 'blur(6px)',
                   transition: 'all 0.2s ease'
                 }}
                 title={editMode ? 'Exit edit mode' : 'Enter edit mode to delete questions'}
@@ -445,13 +551,13 @@ const IntakeFlowVisualizer: React.FC = () => {
                 onClick={() => startSession(true)}
                 style={{
                   padding: '10px 20px',
-                  backgroundColor: 'rgba(34, 197, 94, 0.8)',
+                  backgroundColor: '#0f766e',
                   color: 'white',
-                  border: '1px solid rgba(34, 197, 94, 0.4)',
+                  border: '1px solid rgba(13,148,136,0.8)',
                   borderRadius: '8px',
                   cursor: 'pointer',
                   marginRight: '12px',
-                  backdropFilter: 'blur(10px)',
+                  backdropFilter: 'blur(6px)',
                   transition: 'all 0.2s ease'
                 }}
               >
@@ -461,13 +567,13 @@ const IntakeFlowVisualizer: React.FC = () => {
                 onClick={() => setShowValues(!showValues)}
                 style={{
                   padding: '10px 20px',
-                  backgroundColor: showValues ? 'rgba(239, 68, 68, 0.8)' : 'rgba(107, 114, 128, 0.8)',
+                  backgroundColor: showValues ? 'rgba(239, 68, 68, 0.85)' : '#262626',
                   color: 'white',
-                  border: `1px solid ${showValues ? 'rgba(239, 68, 68, 0.4)' : 'rgba(107, 114, 128, 0.4)'}`,
+                  border: `1px solid ${showValues ? 'rgba(239, 68, 68, 0.5)' : 'rgba(255,255,255,0.08)'}`,
                   borderRadius: '8px',
                   cursor: 'pointer',
                   marginRight: '12px',
-                  backdropFilter: 'blur(10px)',
+                  backdropFilter: 'blur(6px)',
                   transition: 'all 0.2s ease'
                 }}
               >
@@ -492,11 +598,11 @@ const IntakeFlowVisualizer: React.FC = () => {
                 placeholder="Say something..." 
                 style={{
                   padding: '8px 12px',
-                  backgroundColor: 'rgba(51, 65, 85, 0.8)',
+                  backgroundColor: '#111827',
                   color: 'white',
-                  border: '1px solid rgba(71, 85, 105, 0.4)',
+                  border: '1px solid rgba(255,255,255,0.08)',
                   borderRadius: '6px',
-                  backdropFilter: 'blur(10px)',
+                  backdropFilter: 'blur(4px)',
                   minWidth: '200px'
                 }}
               />
@@ -504,12 +610,12 @@ const IntakeFlowVisualizer: React.FC = () => {
                 type="submit"
                 style={{
                   padding: '8px 16px',
-                  backgroundColor: 'rgba(59, 130, 246, 0.8)',
+                  backgroundColor: '#0f766e',
                   color: 'white',
-                  border: '1px solid rgba(59, 130, 246, 0.4)',
+                  border: '1px solid rgba(13,148,136,0.8)',
                   borderRadius: '6px',
                   cursor: 'pointer',
-                  backdropFilter: 'blur(10px)',
+                  backdropFilter: 'blur(4px)',
                   transition: 'all 0.2s ease'
                 }}
               >
@@ -520,7 +626,7 @@ const IntakeFlowVisualizer: React.FC = () => {
         </div>
         
         {/* Flow Diagram */}
-        <div style={{ height: 'calc(100% - 80px)', backgroundColor: '#0f172a' }}>
+        <div style={{ height: 'calc(100% - 80px)', backgroundColor: '#000000' }}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -529,17 +635,22 @@ const IntakeFlowVisualizer: React.FC = () => {
             onConnect={onConnect}
             nodeTypes={nodeTypes}
             connectionMode={ConnectionMode.Loose}
+            connectionLineType={ConnectionLineType.SimpleBezier}
+            defaultEdgeOptions={{
+              type: 'simplebezier',
+              style: { stroke: 'rgba(71, 85, 105, 0.6)', strokeWidth: 1.5, strokeLinecap: 'round' }
+            }}
             onDrop={onDropCanvas}
             onDragOver={onDragOverCanvas}
             fitView
             attributionPosition="bottom-left"
-            style={{ backgroundColor: '#0f172a' }}
+            style={{ backgroundColor: '#000000' }}
           >
             <Background 
               variant={'dots' as any} 
-              gap={20} 
-              size={1.5} 
-              color="rgba(71, 85, 105, 0.3)"
+              gap={22} 
+              size={1.2} 
+              color="rgba(255,255,255,0.06)"
             />
             <Controls />
           </ReactFlow>
@@ -549,16 +660,16 @@ const IntakeFlowVisualizer: React.FC = () => {
       {/* Side Panel */}
       <div style={{ 
         width: 350, 
-        borderLeft: '1px solid rgba(71, 85, 105, 0.3)', 
-        backgroundColor: 'rgba(30, 41, 59, 0.95)',
-        backdropFilter: 'blur(10px)',
+        borderLeft: '1px solid rgba(255,255,255,0.06)', 
+        backgroundColor: '#0b0f13',
+        backdropFilter: 'blur(6px)',
         height: '100%',
         overflowY: 'auto',
         display: 'flex',
         flexDirection: 'column'
       }}>
         {/* Flow Toolbox (pre-session) */}
-        <div style={{ padding: '16px', borderBottom: '1px solid rgba(71, 85, 105, 0.3)', flexShrink: 0 }}>
+        <div style={{ padding: '16px', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0 }}>
           <h4 style={{ margin: '0 0 10px 0', color: 'rgba(255,255,255,0.9)' }}>Flow Toolbox</h4>
           <div
             draggable
@@ -590,9 +701,11 @@ const IntakeFlowVisualizer: React.FC = () => {
               }}
             >
               <option value="">Select step…</option>
-              {steps.map(s => (
-                <option key={s.name} value={s.name}>{s.order_index}. {s.name}</option>
-              ))}
+              {[...steps]
+                .sort((a, b) => a.order_index - b.order_index)
+                .map((s, idx) => (
+                  <option key={s.name} value={s.name}>{idx + 1}. {s.name}</option>
+                ))}
             </select>
             <textarea
               value={editPrompt}
@@ -603,20 +716,38 @@ const IntakeFlowVisualizer: React.FC = () => {
                 backgroundColor: 'rgba(51,65,85,0.6)', color: 'white', border: '1px solid rgba(71,85,105,0.4)', height: 60
               }}
             />
+            <div style={{ fontSize: 12, color: 'rgba(156,163,175,0.8)', margin: '8px 0 6px' }}>Next step after this</div>
+            <select
+              value={editNextName || '__END__'}
+              onChange={(e) => setEditNextName(e.target.value)}
+              style={{
+                width: '100%', padding: 8, borderRadius: 6,
+                backgroundColor: 'rgba(51,65,85,0.6)', color: 'white', border: '1px solid rgba(71,85,105,0.4)'
+              }}
+              disabled={!editStepName}
+            >
+              <option value="__END__">END (complete flow)</option>
+              {[...steps]
+                .sort((a, b) => a.order_index - b.order_index)
+                .filter(s => s.name !== editStepName)
+                .map((s) => (
+                  <option key={s.name} value={s.name}>{s.name}</option>
+                ))}
+            </select>
             <button
-              onClick={handleUpdatePrompt}
-              disabled={!editStepName || !editPrompt.trim()}
+              onClick={handleUpdateStep}
+              disabled={!editStepName}
               style={{
                 marginTop: 8,
                 padding: '8px 12px',
                 borderRadius: 6,
-                backgroundColor: (!editStepName || !editPrompt.trim()) ? 'rgba(107,114,128,0.6)' : 'rgba(34,197,94,0.8)',
+                backgroundColor: (!editStepName) ? 'rgba(107,114,128,0.6)' : 'rgba(34,197,94,0.8)',
                 color: 'white',
                 border: '1px solid rgba(71,85,105,0.4)',
-                cursor: (!editStepName || !editPrompt.trim()) ? 'not-allowed' : 'pointer'
+                cursor: (!editStepName) ? 'not-allowed' : 'pointer'
               }}
             >
-              Save Prompt
+              Save Step
             </button>
           </div>
         </div>
